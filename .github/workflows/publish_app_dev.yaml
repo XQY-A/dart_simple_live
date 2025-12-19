@@ -1,14 +1,14 @@
 name: app-build-action-dev
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  
   push:
-    tags:
+    tags:  
       - "dev_v*"
 
 jobs:
-  # 打包Android、iOS、Mac
-  build-mac-ios-android:
+  # 打包iOS、Mac
+  build-mac-ios:  
     runs-on: macos-latest
 
     permissions:
@@ -19,27 +19,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: dev
-
-      # APK签名设置
-      - name: Download Android keystore
-        id: android_keystore
-        uses: timheuer/base64-to-file@v1.2
-        with:
-          fileName: keystore.jks
-          encodedString: ${{ secrets.KEYSTORE_BASE64 }}
-      - name: Create key.properties
-        run: |
-          echo "storeFile=${{ steps.android_keystore.outputs.filePath }}" > simple_live_app/android/key.properties
-          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> simple_live_app/android/key.properties
-
-      # 设置JAVA环境
-      - uses: actions/setup-java@v4
-        with:
-          distribution: "zulu"
-          java-version: "17"
-          cache: "gradle"
 
       # 设置Flutter
       - name: Flutter action
@@ -53,10 +32,19 @@ jobs:
         run: flutter config --enable-macos-desktop
 
       # 更新Flutter的packages
-      - name: Restore packages
+      - name:  Restore packages
         run: |
           cd simple_live_app
           flutter pub get
+
+      # 获取版本号
+      - name: Get version
+        id: version
+        run: |
+          cd simple_live_app
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
 
       # 安装appdmg npm install -g appdmg
       - name: Install appdmg
@@ -64,23 +52,7 @@ jobs:
 
       # 设置flutter_distributor环境
       - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
-
-      # 打包APK
-      - name: Build APK
-        run: |
-          cd simple_live_app
-          flutter build apk --release --split-per-abi
-
-      #上传Artifacts
-      - name: Upload APK to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android
-          path: |
-            simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
+        run:  dart pub global activate flutter_distributor
 
       #打包iOS
       - name: Build IPA
@@ -95,16 +67,16 @@ jobs:
           mkdir build/ios/iphoneos/Payload
           cp -R build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/Runner.app
           cd build/ios/iphoneos/
-          zip -q -r ios_no_sign.ipa Payload
+          zip -q -r SimpleLive_${{ steps.version.outputs.version }}_ios_no_sign.ipa Payload
           cd ../../..
 
       # 上传IPA至Artifacts
       - name: Upload IPA to Artifacts
         uses: actions/upload-artifact@v4
-        with:
-          name: ios
+        with:  
+          name: ios-${{ steps.version.outputs.version }}
           path: |
-            simple_live_app/build/ios/iphoneos/ios_no_sign.ipa
+            simple_live_app/build/ios/iphoneos/*_ios_no_sign.ipa
 
       # 打包MAC
       - name: Build MacOS
@@ -112,65 +84,36 @@ jobs:
           cd simple_live_app
           flutter_distributor package --platform macos --targets dmg,zip --skip-clean
 
+      # 重命名MAC文件以包含版本号
+      - name: Rename MacOS files
+        run: |
+          cd simple_live_app/build/dist
+          for file in */*. dmg; do
+            if [ -f "$file" ]; then
+              dir=$(dirname "$file")
+              newname="SimpleLive_${{ steps.version.outputs.version }}_macos. dmg"
+              mv "$file" "$dir/$newname"
+            fi
+          done
+          for file in */*.zip; do
+            if [ -f "$file" ]; then
+              dir=$(dirname "$file")
+              basename=$(basename "$file" .zip)
+              newname="SimpleLive_${{ steps. version.outputs.version }}_macos. zip"
+              mv "$file" "$dir/$newname"
+            fi
+          done
+
       # 上传MAC至Artifacts
       - name: Upload MacOS to Artifacts
         uses: actions/upload-artifact@v4
-        with:
-          name: mac
+        with: 
+          name: macos-${{ steps.version.outputs.version }}
           path: |
-            simple_live_app/build/dist/*/*.dmg
+            simple_live_app/build/dist/*/*. dmg
             simple_live_app/build/dist/*/*.zip
       #完成
-      - run: echo "🍏 This job's status is ${{ job.status }}."
-
-  # 打包Linux
-  build-linux:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      # 签出代码
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
-      # 设置Flutter环境
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.38.x"
-          cache: true
-      # 安装依赖
-      - name: Update apt-get
-        run: sudo apt-get update
-      - name: Install Dependencies
-        run: sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libasound2-dev libmpv-dev mpv
-      # 打开Linux Desktop支持
-      - name: Enable Flutter Desktop
-        run: flutter config --enable-linux-desktop
-      # 更新Flutter的packages
-      - name: Restore Packages
-        run: |
-          cd simple_live_app
-          flutter pub get
-      # 设置flutter_distributor环境
-      - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
-      # build Linux ZIP\DMG
-      - name: Build Linux
-        run: |
-          cd simple_live_app
-          flutter_distributor package --platform linux --targets deb,zip --skip-clean
-      # 上传Linux包至Artifacts
-      - name: Upload Linux APP to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: |
-            simple_live_app/build/dist/*/*.deb
-            simple_live_app/build/dist/*/*.zip
-
-        #完成
-      - run: echo "🍏 Linux job's status is ${{ job.status }}."
+      - run: echo "🍏 This job's status is ${{ job. status }}."
 
   # 打包Windows
   build-windows:
@@ -179,21 +122,32 @@ jobs:
       contents: write
     steps:
       # 签出代码
-      - uses: actions/checkout@v4
+      - uses:  actions/checkout@v4
         with:
           ref: dev
       # 设置Flutter环境
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
-        with:
+        with:  
           flutter-version: "3.38.x"
           cache: true
-      - name: Enable Flutter Desktop
+      - name:  Enable Flutter Desktop
         run: flutter config --enable-windows-desktop
-      - name: Restore Packages
+      - name:  Restore Packages
         run: |
           cd simple_live_app
           flutter pub get
+      
+      # 获取版本号
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          cd simple_live_app
+          VERSION=$(grep '^version: ' pubspec.yaml | sed 's/version: //' | tr -d '\r')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
       # 设置flutter_distributor环境
       - name: Install flutter_distributor
         run: dart pub global activate flutter_distributor
@@ -202,13 +156,34 @@ jobs:
         run: |
           cd simple_live_app
           flutter_distributor package --platform windows --targets msix,zip --skip-clean
+      
+      # 重命名Windows文件以包含版本号
+      - name:  Rename Windows files
+        shell: bash
+        run: |
+          cd simple_live_app/build/dist
+          for file in */*. msix; do
+            if [ -f "$file" ]; then
+              dir=$(dirname "$file")
+              newname="SimpleLive_${{ steps.version.outputs.version }}_windows.msix"
+              mv "$file" "$dir/$newname"
+            fi
+          done
+          for file in */*.zip; do
+            if [ -f "$file" ]; then
+              dir=$(dirname "$file")
+              newname="SimpleLive_${{ steps.version.outputs.version }}_windows.zip"
+              mv "$file" "$dir/$newname"
+            fi
+          done
+      
       # 上传Windows至Artifacts
       - name: Upload Windows APP to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows
+          name: windows-${{ steps.version.outputs.version }}
           path: |
             simple_live_app/build/dist/*/*.msix
             simple_live_app/build/dist/*/*.zip
         #完成
-      - run: echo "🍏 Windows job's status is ${{ job.status }}."
+      - run: echo "🍏 Windows job's status is ${{ job. status }}."
